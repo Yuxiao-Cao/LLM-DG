@@ -242,7 +242,7 @@ class GameCard:
 AUTONOMOUS DRIVING GAME-THEORETIC DECISION MAKING
 
 SCENARIO DESCRIPTION:
-Scenario Type: {scenario.scenario_type or 'intersection_crossing'}
+Scenario Type: intersection_crossing (extendable to roundabout/lane-change)
 Context: High-interaction driving scenario requiring strategic decision-making considering opponent behavior
 
 SPATIAL RELATIONSHIP DESCRIPTION:
@@ -314,7 +314,7 @@ Spatial Analysis:
 REASONING CHAIN:
 
 1. APPLICABLE TRAFFIC RULES:
-   - Identify relevant traffic regulations for {scenario.scenario_type or 'intersection_crossing'}
+   - Identify relevant traffic regulations for intersection_crossing
    - Determine right-of-way rules and priority relationships
    - Consider speed limits and safety distance requirements
    - Assess legal obligations and traffic code compliance
@@ -386,7 +386,7 @@ Execute your strategic decision now:
 AUTONOMOUS DRIVING FUZZY GAME-THEORETIC PRIORITY DETERMINATION
 
 SCENARIO DESCRIPTION:
-Scenario Type: {scenario.scenario_type or 'intersection_crossing'}
+Scenario Type: intersection_crossing (extendable to roundabout/lane-change)
 Context: High-interaction driving scenario requiring fuzzy priority assessment with game-theoretic strategic reasoning
 
 SPATIAL RELATIONSHIP DESCRIPTION:
@@ -518,7 +518,7 @@ Provide your fuzzy priority decision in the following JSON format:
         "contextual_priority": <0.0_to_1.0>
     }},
     "risk_level": "<low|medium|high|critical>",
-    "scenario_type": "<{scenario.scenario_type or 'intersection_crossing'}>",
+    "scenario_type": "<intersection_crossing>",
     "game_theory_considerations": "<fuzzy_nash_equilibrium_and_cooperative_analysis>",
     "opponent_model": "<fuzzy_prediction_of_opponent_priority_behavior>"
 }}

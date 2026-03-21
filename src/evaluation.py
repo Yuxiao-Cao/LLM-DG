@@ -234,38 +234,102 @@ class PreciseEvaluator:
 
     def _evaluate_rationality(self, scenario: InteractionScenario, decision: LLMDecision) -> float:
         """
-        Rationality evaluation using evaluation4.py definition
-        Ultra-streamlined rationality evaluation
+        Rationality = Decision consistency with dual baselines (human + optimal)
+
+        Formula: R = w_h * C_human + w_o * C_optimal
+        - w_h = 0.6: weight for human baseline (real driver data)
+        - w_o = 0.4: weight for optimal baseline (game-theoretic)
+
+        Returns:
+            float: Rationality score in [0, 100]
         """
         v1, v2 = scenario.vehicle_1, scenario.vehicle_2
-        acc = decision.acceleration_1
-        score = 100.0
+        llm_acc = decision.acceleration_1
 
-        # Opponent consideration
-        if v2.velocity > v1.velocity and acc > 0.5 and v1.distance > v2.distance:
-            score -= 30  # Not accounting for faster opponent
-        elif v2.velocity < v1.velocity and acc < -1 and v1.distance < v2.distance:
-            score -= 20  # Overly cautious
+        # Human baseline: alignment with ground truth acceleration
+        human_score = 60.0
+        if v1.acceleration is not None:
+            diff_h = abs(llm_acc - v1.acceleration)
+            human_score = 60 * max(0, 1 - diff_h / 6.0)
 
-        # Distance-based behavior
-        if v2.distance < 5 and acc > 1:
-            score -= 25  # Too aggressive
-        elif v2.distance > 20 and acc < -1:
-            score -= 15  # Overly cautious
+        # Optimal baseline: alignment with game-theoretic optimum
+        optimal_acc = self._compute_optimal_acceleration(v1, v2)
+        diff_o = abs(llm_acc - optimal_acc)
+        optimal_score = 40 * max(0, 1 - diff_o / 6.0)
 
-        # Cooperative behavior
-        if v1.distance > v2.distance and v1.velocity > v2.velocity and acc < 0:
-            score += 10  # Appropriate yielding
-        elif abs(v1.distance - v2.distance) < 3 and acc > 2:
-            score -= 25  # Too aggressive in close situation
+        return max(0, min(100, human_score + optimal_score))
 
-        # Timing
-        if v1.distance > 30 and abs(acc) > 1:
-            score -= 10  # Early strong decision
-        elif v1.distance < 5 and abs(acc) < 0.1:
-            score -= 20  # No decision when needed
+    def _compute_optimal_acceleration(self, v1: 'VehicleState', v2: 'VehicleState') -> float:
+        """
+        Compute game-theoretic optimal acceleration using kinematic analysis.
 
-        return max(0, min(100, score))
+        This implements a simplified game-theoretic decision model:
+        - Calculate time-to-collision (TTC) for both vehicles
+        - Determine priority based on TTC comparison (first-come-first-served)
+        - Apply acceleration based on priority and safety margins
+
+        Args:
+            v1: Ego vehicle state
+            v2: Opponent vehicle state
+
+        Returns:
+            float: Optimal acceleration in [-3, 3] m/s²
+        """
+        # Calculate time to intersection for each vehicle
+        t1 = v1.distance / max(v1.velocity, 0.1)
+        t2 = v2.distance / max(v2.velocity, 0.1)
+
+        # Calculate TTC considering current acceleration
+        if v1.acceleration is not None and v1.acceleration != 0:
+            d1 = v1.velocity**2 + 2 * v1.acceleration * v1.distance
+            if d1 > 0:
+                t1_acc = (-v1.velocity + math.sqrt(d1)) / max(v1.acceleration, 0.001)
+                t1 = min(t1, t1_acc)
+
+        if v2.acceleration is not None and v2.acceleration != 0:
+            d2 = v2.velocity**2 + 2 * v2.acceleration * v2.distance
+            if d2 > 0:
+                t2_acc = (-v2.velocity + math.sqrt(d2)) / max(v2.acceleration, 0.001)
+                t2 = min(t2, t2_acc)
+
+        # Safety margin parameters
+        safety_gap = 1.5  # seconds
+        yield_distance = 15.0  # meters
+
+        # Determine optimal acceleration based on priority
+        if t1 < t2 - safety_gap:
+            # We have clear priority: accelerate moderately
+            optimal_acc = min(1.5, (self.config.target_speed - v1.velocity) * 0.5)
+        elif t1 > t2 + safety_gap:
+            # Opponent has priority: yield
+            if v1.distance < yield_distance:
+                optimal_acc = -2.0  # Strong deceleration to yield
+            else:
+                optimal_acc = -0.5  # Gentle deceleration
+        else:
+            # Ambiguous situation (competitive): calculate optimal strategy
+            # Use velocity advantage as tiebreaker
+            if v1.velocity > v2.velocity:
+                optimal_acc = 0.5  # Slight acceleration
+            elif v1.velocity < v2.velocity:
+                optimal_acc = -0.3  # Slight deceleration
+            else:
+                # Equal conditions: use distance as tiebreaker
+                if v1.distance < v2.distance:
+                    optimal_acc = 0.3
+                else:
+                    optimal_acc = -0.2
+
+        # Apply speed limit constraint
+        future_speed = v1.velocity + optimal_acc * self.config.reaction_time
+        if future_speed > self.config.speed_limit:
+            optimal_acc = (self.config.speed_limit - v1.velocity) / self.config.reaction_time
+
+        # Clamp to valid acceleration range
+        optimal_acc = max(-self.config.max_acceleration,
+                         min(self.config.max_acceleration, optimal_acc))
+
+        return optimal_acc
 
     def _evaluate_decision_only(self, scenario: InteractionScenario, decision: LLMDecision) -> 'EvaluationResult':
         """

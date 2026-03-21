@@ -280,6 +280,9 @@ class LLMDGPipeline:
         Returns:
             Path to saved file
         """
+        # Ensure output directory exists
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
         if filename is None:
             filename = self._generate_filename("results")
 
@@ -484,7 +487,7 @@ def main():
     parser.add_argument(
         "--model-type",
         choices=["doubao", "openai", "deepseek", "qwen", "gemini", "claude"],
-        default="mock",
+        default="deepseek",
         help="Type of LLM interface to use"
     )
 
