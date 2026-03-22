@@ -60,7 +60,7 @@ class LLMDGPipeline:
         self.model_type = model_type
         self.cot_type = cot_type
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize decision-making components based on mode
         if decision_mode == "precise":
