@@ -664,7 +664,7 @@ Execute your fuzzy priority determination now:
         ttc = (d2 - d1) / (v1 - v2)
         return ttc if ttc > 0 else None
 
-    def parse_precise_response(self, response: str) -> LLMDecision:
+    def parse_precise_response(self, response: str, strict: bool = False) -> LLMDecision:
         """
         Parse LLM response into LLMDecision object
 
@@ -674,48 +674,76 @@ Execute your fuzzy priority determination now:
         Returns:
             Parsed LLMDecision object
         """
-        try:
-            # Try to extract JSON from response
-            json_start = response.find('{')
-            json_end = response.rfind('}') + 1
-
-            if json_start >= 0 and json_end > json_start:
-                json_str = response[json_start:json_end]
-                data = json.loads(json_str)
-
+        import re
+        json_start = response.find('{')
+        json_end = response.rfind('}') + 1
+        if json_start >= 0 and json_end > json_start:
+            try:
+                data = json.loads(response[json_start:json_end])
+            except Exception as exc:
                 return LLMDecision(
-                    acceleration_1=float(data['acceleration_1']),
-                    reasoning=data.get('reasoning', response),
-                    confidence=float(data.get('confidence', 0.0)),
-                    strategy_type=data.get('strategy_type', 'unknown')
+                    acceleration_1=0.0, reasoning=response, confidence=0.0,
+                    strategy_type='parse_error', parse_status='parse_error',
+                    is_valid=False, parse_error=str(exc), parser_used='json',
+                    acceleration_handling='legacy_default_zero_not_valid'
                 )
-            else:
-                # Fallback: try to extract acceleration value directly
-                import re
-                accel_match = re.search(r'acceleration[_\s]*1[:\s=]+(-?\d+\.?\d*)', response.lower())
-                if accel_match:
-                    acceleration = float(accel_match.group(1))
-                else:
-                    # Default safe acceleration if parsing fails
-                    acceleration = 0.0
-
+            if 'acceleration_1' not in data:
                 return LLMDecision(
-                    acceleration_1=acceleration,
-                    reasoning=response,
-                    confidence=0.0,
-                    strategy_type='parse_failed'
+                    acceleration_1=0.0, reasoning=data.get('reasoning', response),
+                    confidence=0.0, strategy_type='invalid_schema',
+                    parse_status='invalid_schema', is_valid=False,
+                    parse_error='Missing required field: acceleration_1',
+                    parser_used='json', acceleration_handling='legacy_default_zero_not_valid'
                 )
-
-        except Exception as e:
-            # Return safe default if parsing fails
+            try:
+                raw_acceleration = float(data['acceleration_1'])
+            except (TypeError, ValueError) as exc:
+                return LLMDecision(
+                    acceleration_1=0.0, reasoning=data.get('reasoning', response),
+                    confidence=0.0, strategy_type='invalid_schema',
+                    parse_status='invalid_schema', is_valid=False,
+                    parse_error=f'Invalid acceleration_1: {exc}', parser_used='json',
+                    acceleration_handling='legacy_default_zero_not_valid'
+                )
+            in_range = -3.0 <= raw_acceleration <= 3.0
             return LLMDecision(
-                acceleration_1=0.0,
-                reasoning=f"Failed to parse LLM response: {str(e)}. Original response: {response}",
-                confidence=0.0,
-                strategy_type='parse_error'
+                acceleration_1=raw_acceleration,
+                raw_acceleration_1=raw_acceleration,
+                acceleration_handling='accepted' if in_range else 'retained_unclipped_invalid',
+                reasoning=data.get('reasoning', response),
+                confidence=float(data.get('confidence', 0.0)),
+                strategy_type=data.get('strategy_type', 'unknown'),
+                parse_status='strict_json' if in_range else 'invalid_schema',
+                is_valid=in_range,
+                parse_error=None if in_range else 'acceleration_1 outside allowed range [-3, 3]',
+                parser_used='json'
             )
 
-    def parse_fuzzy_response(self, response: str, scenario: InteractionScenario) -> 'FuzzyDecision':
+        match = re.search(
+            r'acceleration[_\s]*1["\']?\s*[:=]\s*(-?\d+(?:\.\d+)?)',
+            response, re.IGNORECASE
+        )
+        if match:
+            raw_acceleration = float(match.group(1))
+            in_range = -3.0 <= raw_acceleration <= 3.0
+            return LLMDecision(
+                acceleration_1=raw_acceleration, raw_acceleration_1=raw_acceleration,
+                acceleration_handling='accepted_regex' if in_range else 'retained_unclipped_invalid',
+                reasoning=response, confidence=0.0, strategy_type='regex_fallback',
+                parse_status='regex_fallback' if in_range else 'invalid_schema',
+                is_valid=in_range,
+                parse_error=None if in_range else 'acceleration_1 outside allowed range [-3, 3]',
+                parser_used='regex'
+            )
+        return LLMDecision(
+            acceleration_1=0.0, reasoning=response, confidence=0.0,
+            strategy_type='default_fallback', parse_status='default_fallback',
+            is_valid=False, parse_error='No acceleration_1 could be extracted',
+            parser_used='legacy_default', acceleration_handling='legacy_default_zero_not_valid'
+        )
+
+    def parse_fuzzy_response(self, response: str, scenario: InteractionScenario,
+                             strict: bool = False) -> 'FuzzyDecision':
         """
         Parse LLM fuzzy response into FuzzyDecision object
 
@@ -728,52 +756,59 @@ Execute your fuzzy priority determination now:
         """
         from .data_models import FuzzyDecision
 
-        try:
-            # Try to extract JSON from response
-            json_start = response.find('{')
-            json_end = response.rfind('}') + 1
-
-            if json_start >= 0 and json_end > json_start:
-                json_str = response[json_start:json_end]
-                data = json.loads(json_str)
-
-                return FuzzyDecision(
-                    priority_vehicle=data.get('priority_vehicle', scenario.vehicle_1.vehicle_id),
-                    confidence=float(data.get('confidence', 0.5)),
-                    fuzzy_reasoning=data.get('fuzzy_weights', {}),
-                    textual_reasoning=data.get('reasoning', response),
-                    risk_level=data.get('risk_level', 'medium'),
-                    scenario_type=data.get('scenario_type', scenario.scenario_type or 'other')
+        allowed = {scenario.vehicle_1.vehicle_id, scenario.vehicle_2.vehicle_id, 'shared'}
+        json_start = response.find('{')
+        json_end = response.rfind('}') + 1
+        if json_start >= 0 and json_end > json_start:
+            try:
+                data = json.loads(response[json_start:json_end])
+            except Exception as exc:
+                return self._invalid_fuzzy_decision(
+                    scenario, response, 'parse_error', str(exc), 'json'
                 )
-            else:
-                # Fallback: try to extract priority vehicle directly
-                import re
-                v1_id = scenario.vehicle_1.vehicle_id
-                v2_id = scenario.vehicle_2.vehicle_id
-
-                if v1_id in response and v2_id not in response:
-                    priority = v1_id
-                elif v2_id in response and v1_id not in response:
-                    priority = v2_id
-                else:
-                    priority = v1_id  # Default fallback
-
-                return FuzzyDecision(
-                    priority_vehicle=priority,
-                    confidence=0.3,  # Low confidence for fallback parsing
-                    fuzzy_reasoning={},
-                    textual_reasoning=f"Fallback parsing: {response[:200]}...",
-                    risk_level='medium',
-                    scenario_type=scenario.scenario_type or 'other'
+            if 'priority_vehicle' not in data:
+                return self._invalid_fuzzy_decision(
+                    scenario, response, 'invalid_schema',
+                    'Missing required field: priority_vehicle', 'json'
                 )
-
-        except Exception as e:
-            # Return safe fallback if parsing fails
+            priority = str(data['priority_vehicle'])
+            if priority not in allowed:
+                return self._invalid_fuzzy_decision(
+                    scenario, response, 'invalid_schema',
+                    f'Illegal priority_vehicle: {priority}; allowed: {sorted(allowed)}', 'json'
+                )
             return FuzzyDecision(
-                priority_vehicle=scenario.vehicle_1.vehicle_id,
-                confidence=0.0,
-                fuzzy_reasoning={},
-                textual_reasoning=f"Failed to parse fuzzy response: {str(e)}. Original: {response[:200]}...",
-                risk_level='unknown',
-                scenario_type=scenario.scenario_type or 'parse_error'
+                priority_vehicle=priority,
+                confidence=float(data.get('confidence', 0.5)),
+                fuzzy_reasoning=data.get('fuzzy_weights', {}),
+                textual_reasoning=data.get('reasoning', response),
+                risk_level=data.get('risk_level', 'medium'),
+                scenario_type=data.get('scenario_type', scenario.scenario_type or 'other'),
+                parse_status='strict_json', is_valid=True, parser_used='json'
             )
+
+        mentioned = [value for value in allowed if value in response]
+        if len(mentioned) == 1:
+            return FuzzyDecision(
+                priority_vehicle=mentioned[0], confidence=0.3, fuzzy_reasoning={},
+                textual_reasoning=f"Fallback parsing: {response[:200]}...",
+                risk_level='medium', scenario_type=scenario.scenario_type or 'other',
+                parse_status='regex_fallback', is_valid=True, parser_used='regex'
+            )
+        return self._invalid_fuzzy_decision(
+            scenario, response, 'default_fallback',
+            'No unique allowed priority_vehicle could be extracted', 'legacy_default'
+        )
+
+    @staticmethod
+    def _invalid_fuzzy_decision(scenario: InteractionScenario, response: str,
+                                status: str, error: str, parser: str) -> 'FuzzyDecision':
+        """Return an explicitly invalid legacy-compatible fuzzy fallback."""
+        from .data_models import FuzzyDecision
+        return FuzzyDecision(
+            priority_vehicle=scenario.vehicle_1.vehicle_id,
+            confidence=0.0, fuzzy_reasoning={},
+            textual_reasoning=f"Invalid parse: {error}. Original: {response[:200]}...",
+            risk_level='unknown', scenario_type=scenario.scenario_type or 'parse_error',
+            parse_status=status, is_valid=False, parse_error=error, parser_used=parser
+        )

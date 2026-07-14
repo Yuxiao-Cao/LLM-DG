@@ -32,7 +32,11 @@ from src.experiments.closed_loop import (
     save_rollout_results,
     save_aggregate_statistics
 )
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 
 def parse_arguments():

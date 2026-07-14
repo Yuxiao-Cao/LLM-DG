@@ -26,7 +26,7 @@ class InteractionDataLoader:
 
     def load_data(self) -> None:
         """Load data from CSV file"""
-        self.data = pd.read_csv(self.csv_path)
+        self.data = pd.read_csv(self.csv_path, dtype={'Scenario_id': str})
         self._group_by_scenario()
 
     def _group_by_scenario(self) -> None:
@@ -62,33 +62,7 @@ class InteractionDataLoader:
         else:
             row = scenario_data.iloc[0]
 
-        # Create vehicle states
-        vehicle_1 = VehicleState(
-            vehicle_id=str(row['track_id_1']),
-            distance=float(row['d_1']),
-            velocity=float(row['v_1']),
-            acceleration=float(row['a_1']) if pd.notna(row['a_1']) else None
-        )
-
-        vehicle_2 = VehicleState(
-            vehicle_id=str(row['track_id_2']),
-            distance=float(row['d_2']),
-            velocity=float(row['v_2']),
-            acceleration=float(row['a_2']) if pd.notna(row['a_2']) else None
-        )
-
-        # Extract scenario type from the first column and ground truth priority from the priority column
-        scenario_type = str(row['Scenario_type']) if pd.notna(row['Scenario_type']) else None
-        ground_truth_priority = str(row['priority']) if pd.notna(row['priority']) else None
-
-        return InteractionScenario(
-            scenario_id=str(row['Scenario_id']),
-            frame_id=int(row['frame_id']),
-            vehicle_1=vehicle_1,
-            vehicle_2=vehicle_2,
-            scenario_type=scenario_type,
-            ground_truth_priority=ground_truth_priority
-        )
+        return self._rows_to_scenarios(pd.DataFrame([row]))[0]
 
     def get_all_scenarios(self) -> List[InteractionScenario]:
         """
@@ -104,12 +78,13 @@ class InteractionDataLoader:
                 scenarios.append(scenario)
         return scenarios
 
-    def get_sample_scenarios(self, n: int = 5) -> List[InteractionScenario]:
+    def get_sample_scenarios(self, n: int = 5, random_state: int = 42) -> List[InteractionScenario]:
         """
         Get a random sample of scenarios
 
         Args:
             n: Number of scenarios to sample
+            random_state: Seed passed to pandas sampling for reproducibility
 
         Returns:
             List of sampled InteractionScenario objects
@@ -117,10 +92,15 @@ class InteractionDataLoader:
         if self.data is None:
             raise ValueError("Data not loaded. Call load_data() first.")
 
-        sample_data = self.data.sample(n=min(n, len(self.data)))
-        scenarios = []
+        sample_data = self.data.sample(
+            n=min(n, len(self.data)), random_state=random_state, replace=False
+        )
+        return self._rows_to_scenarios(sample_data)
 
-        for _, row in sample_data.iterrows():
+    def _rows_to_scenarios(self, rows: pd.DataFrame) -> List[InteractionScenario]:
+        """Convert data rows to scenarios while preserving row order."""
+        scenarios = []
+        for _, row in rows.iterrows():
             vehicle_1 = VehicleState(
                 vehicle_id=str(row['track_id_1']),
                 distance=float(row['d_1']),
@@ -148,8 +128,77 @@ class InteractionDataLoader:
                 ground_truth_priority=ground_truth_priority
             )
             scenarios.append(scenario)
-
         return scenarios
+
+    def get_scenarios_from_manifest(self, manifest_path: str) -> List[InteractionScenario]:
+        """Load scenario frames listed in a manifest, preserving manifest order.
+
+        The manifest must contain ``Scenario_id`` and ``frame_id`` columns. Both
+        the manifest and source data must be unique on that composite key.
+        """
+        if self.data is None:
+            raise ValueError("Data not loaded. Call load_data() first.")
+
+        manifest = pd.read_csv(manifest_path, dtype={'Scenario_id': str})
+        required_columns = {'Scenario_id', 'frame_id'}
+        missing_columns = required_columns.difference(manifest.columns)
+        if missing_columns:
+            raise ValueError(
+                "Manifest is missing required columns: "
+                + ", ".join(sorted(missing_columns))
+            )
+
+        if manifest[list(required_columns)].isna().any().any():
+            raise ValueError("Manifest keys Scenario_id and frame_id cannot be empty")
+
+        try:
+            manifest = manifest.copy()
+            numeric_frame_ids = pd.to_numeric(manifest['frame_id'], errors='raise')
+            if not (numeric_frame_ids % 1 == 0).all():
+                raise ValueError("non-integer frame_id")
+            manifest['frame_id'] = numeric_frame_ids.astype('int64')
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Manifest frame_id values must be integers") from exc
+
+        manifest_duplicate_mask = manifest.duplicated(
+            subset=['Scenario_id', 'frame_id'], keep=False
+        )
+        if manifest_duplicate_mask.any():
+            duplicates = self._format_keys(manifest.loc[manifest_duplicate_mask])
+            raise ValueError(f"Manifest contains duplicate sample keys: {duplicates}")
+
+        source = self.data.copy()
+        source['Scenario_id'] = source['Scenario_id'].astype(str)
+        source_duplicate_mask = source.duplicated(
+            subset=['Scenario_id', 'frame_id'], keep=False
+        )
+        if source_duplicate_mask.any():
+            duplicates = self._format_keys(source.loc[source_duplicate_mask])
+            raise ValueError(f"Source data contains duplicate sample keys: {duplicates}")
+
+        source_by_key = source.set_index(['Scenario_id', 'frame_id'], drop=False)
+        requested_keys = list(
+            manifest[['Scenario_id', 'frame_id']].itertuples(index=False, name=None)
+        )
+        missing_keys = [key for key in requested_keys if key not in source_by_key.index]
+        if missing_keys:
+            formatted = ", ".join(f"{scenario_id}::{frame_id}" for scenario_id, frame_id in missing_keys)
+            raise ValueError(f"Manifest records not found in source data: {formatted}")
+
+        selected_rows = pd.DataFrame(
+            [source_by_key.loc[key] for key in requested_keys]
+        ).reset_index(drop=True)
+        if len(selected_rows) != len(manifest):
+            raise RuntimeError("Manifest selection did not preserve every requested record")
+        return self._rows_to_scenarios(selected_rows)
+
+    @staticmethod
+    def _format_keys(rows: pd.DataFrame) -> str:
+        keys = rows[['Scenario_id', 'frame_id']].drop_duplicates()
+        return ", ".join(
+            f"{scenario_id}::{int(frame_id)}"
+            for scenario_id, frame_id in keys.itertuples(index=False, name=None)
+        )
 
     def get_statistics(self) -> Dict[str, Any]:
         """

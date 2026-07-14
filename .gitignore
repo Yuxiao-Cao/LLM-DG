@@ -1,0 +1,48 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments
+venv/
+.venv/
+env/
+site-packages/
+
+# Generated artifacts
+outputs/
+output/
+results/
+logs/
+*.log
+tmp/
+temp/
+cache/
+checkpoints/
+wandb/
+runs/
+
+# Editors and OS files
+.idea/
+.vscode/
+.vs/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Keep versioned manifests and example data
+# manifests/ is intentionally not ignored
+# data/example_data.csv is intentionally not ignored

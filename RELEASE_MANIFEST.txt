@@ -1,0 +1,31 @@
+LLM-DG RELEASE MANIFEST
+Generated (UTC): 2026-07-14T03:40:52+00:00
+Source Git commit: 5e5da31b3a3bab9b9ee01e8617defbed104d6f67
+
+Core entry files:
+- main.py
+- src/
+- README.md
+- requirements.txt
+
+Formal experiment scripts:
+- scripts/create_eval_manifest.py
+- scripts/run_temperature_stability.py
+- scripts/analyze_temperature_stability.py
+- scripts/run_closed_loop_rollout.py
+- scripts/train_bc.py
+- scripts/eval_bc_openloop.py
+
+Retained test files: 0 (tests/ intentionally omitted)
+Example data included: yes (data/example_data.csv)
+Fixed evaluation Manifest included: no
+
+Validation summary:
+- python -m compileall main.py src scripts: PASS
+- python main.py --help: PASS
+- python scripts/create_eval_manifest.py --help: PASS
+- python scripts/run_temperature_stability.py --help: PASS
+- python scripts/analyze_temperature_stability.py --help: PASS
+- pre-removal unit suite: PASS (54 passed, 0 failed); tests/ is not shipped
+- stability runner dry-run: PASS (8 tasks; no API call)
+- credential and absolute-path scan: PASS

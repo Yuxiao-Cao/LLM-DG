@@ -2,13 +2,20 @@
 LLM API interface for interacting with various language models
 """
 
-import requests
+try:
+    import requests
+except ImportError:
+    requests = None
 import json
 from typing import Dict, Any, Optional, List
 import time
 from abc import ABC, abstractmethod
 import os
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
 
 
 # Import OpenAI library for Doubao API compatibility
@@ -26,6 +33,20 @@ load_dotenv()
 
 class LLMInterface(ABC):
     """Abstract base class for LLM interfaces"""
+
+    parameter_capabilities = {
+        "temperature": {"sent_to_provider": True},
+        "top_p": {"sent_to_provider": True},
+        "max_tokens": {"sent_to_provider": True},
+        "generation_seed": {
+            "sent_to_provider_when_set": True,
+            "provider_determinism_guaranteed": False
+        }
+    }
+
+    def get_parameter_capabilities(self) -> Dict[str, Any]:
+        """Describe request support without claiming provider-side determinism."""
+        return {name: dict(details) for name, details in self.parameter_capabilities.items()}
 
     @abstractmethod
     def generate_response(self, prompt: str, **kwargs) -> str:
@@ -63,7 +84,9 @@ class DoubaoInterface(LLMInterface):
         else:
             raise ImportError("OpenAI library is required for Doubao API. Install with: pip install openai")
 
-    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.7, **kwargs) -> str:
+    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.0,
+                          top_p: float = 1.0, generation_seed: Optional[int] = None,
+                          **kwargs) -> str:
         """
         Generate response from Doubao model
 
@@ -88,9 +111,11 @@ class DoubaoInterface(LLMInterface):
                         "role": "user",
                         "content": prompt
                     }
-                ]#,
-                # max_tokens=max_tokens,
-                # temperature=temperature
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                **({"seed": generation_seed} if generation_seed is not None else {})
             )
 
             if completion.choices and len(completion.choices) > 0:
@@ -150,6 +175,8 @@ class OpenAIInterface(LLMInterface):
 
         if not self.api_key:
             raise ValueError("API key is required. Set OPENAI_API_KEY environment variable or pass api_key parameter")
+        if requests is None:
+            raise ImportError("requests is required for the OpenAI HTTP interface")
 
         self.session = requests.Session()
         self.session.headers.update({
@@ -157,7 +184,9 @@ class OpenAIInterface(LLMInterface):
             "Content-Type": "application/json"
         })
 
-    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.7, **kwargs) -> str:
+    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.0,
+                          top_p: float = 1.0, generation_seed: Optional[int] = None,
+                          **kwargs) -> str:
         """
         Generate response from OpenAI-compatible model
 
@@ -185,8 +214,11 @@ class OpenAIInterface(LLMInterface):
                 }
             ],
             "max_tokens": max_tokens,
-            "temperature": temperature
+            "temperature": temperature,
+            "top_p": top_p
         }
+        if generation_seed is not None:
+            payload["seed"] = generation_seed
 
         try:
             response = self.session.post(url, json=payload, timeout=500)
@@ -236,7 +268,9 @@ class DeepseekInterface(LLMInterface):
         else:
             raise ImportError("OpenAI library is required for Deepseek API. Install with: pip install openai")
 
-    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.7, **kwargs) -> str:
+    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.0,
+                          top_p: float = 1.0, generation_seed: Optional[int] = None,
+                          **kwargs) -> str:
         """
         Generate response from Deepseek model
 
@@ -263,7 +297,9 @@ class DeepseekInterface(LLMInterface):
                     }
                 ],
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                top_p=top_p,
+                **({"seed": generation_seed} if generation_seed is not None else {})
             )
 
             if completion.choices and len(completion.choices) > 0:
@@ -306,7 +342,9 @@ class QwenInterface(LLMInterface):
         else:
             raise ImportError("OpenAI library is required for Qwen API. Install with: pip install openai")
 
-    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.7, **kwargs) -> str:
+    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.0,
+                          top_p: float = 1.0, generation_seed: Optional[int] = None,
+                          **kwargs) -> str:
         """
         Generate response from Qwen model
 
@@ -333,7 +371,9 @@ class QwenInterface(LLMInterface):
                     }
                 ],
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                top_p=top_p,
+                **({"seed": generation_seed} if generation_seed is not None else {})
             )
 
             if completion.choices and len(completion.choices) > 0:
@@ -375,7 +415,9 @@ class GeminiInterface(LLMInterface):
         else:
             raise ImportError("OpenAI library is required for GEMINI API. Install with: pip install openai")
 
-    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.7, **kwargs) -> str:
+    def generate_response(self, prompt: str, max_tokens: int = 10**5, temperature: float = 0.0,
+                          top_p: float = 1.0, generation_seed: Optional[int] = None,
+                          **kwargs) -> str:
         """
         Generate response from GEMINI model
 
@@ -402,7 +444,9 @@ class GeminiInterface(LLMInterface):
                     }
                 ],
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                top_p=top_p,
+                **({"seed": generation_seed} if generation_seed is not None else {})
             )
 
             if completion.choices and len(completion.choices) > 0:
@@ -445,7 +489,9 @@ class ClaudeInterface(LLMInterface):
         else:
             raise ImportError("OpenAI library is required for CLAUDE API. Install with: pip install openai")
 
-    def generate_response(self, prompt: str, max_tokens: int = 3*10**4, temperature: float = 0.7, **kwargs) -> str:
+    def generate_response(self, prompt: str, max_tokens: int = 3*10**4, temperature: float = 0.0,
+                          top_p: float = 1.0, generation_seed: Optional[int] = None,
+                          **kwargs) -> str:
         """
         Generate response from CLAUDE model
 
@@ -472,7 +518,9 @@ class ClaudeInterface(LLMInterface):
                     }
                 ],
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                top_p=top_p,
+                **({"seed": generation_seed} if generation_seed is not None else {})
             )
 
             if completion.choices and len(completion.choices) > 0:

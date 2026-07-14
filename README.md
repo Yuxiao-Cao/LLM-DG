@@ -11,6 +11,11 @@ A comprehensive benchmark for evaluating Large Language Models' decision-making 
 - [Key Features](#-key-features)
 - [Installation](#-installation)
 - [Quick Start](#-quick-start)
+- [Reproducible Decoding Protocol](#reproducible-decoding-protocol)
+- [Fixed Evaluation Manifest](#fixed-evaluation-manifest)
+- [Temperature Stability Experiment](#temperature-stability-experiment)
+- [Stability Metrics](#stability-metrics)
+- [Output Provenance](#output-provenance)
 - [Project Structure](#-project-structure)
 - [Decision-Making Modes](#-decision-making-modes)
 - [Non-LLM Baselines](#non-llm-baselines-behavioral-cloning)
@@ -61,62 +66,186 @@ pip install -r requirements.txt
 
 ### Environment Variables Setting
 
-Create a `.env` file in the project root and configure your API credentials:
+Copy the public template and fill in only the providers you intend to use:
 
 ```bash
-# OpenAI API Configuration
-OPENAI_MODEL_NAME=<your model name>
-OPENAI_API_KEY=<your api key>
-OPENAI_BASE_URL=<your base url>
-
-# Doubao API Configuration
-DOUBAO_MODEL_NAME=<your model name>
-DOUBAO_API_KEY=<your api key>
-DOUBAO_BASE_URL=<your base url>
-
-# Deepseek API Configuration
-DEEPSEEK_MODEL_NAME=<your model name>
-DEEPSEEK_API_KEY=<your api key>
-DEEPSEEK_BASE_URL=<your base url>
-
-# Qwen API Configuration
-QWEN_MODEL_NAME=<your model name>
-QWEN_API_KEY=<your api key>
-QWEN_BASE_URL=<your base url>
-
-# Gemini API Configuration
-GEMINI_MODEL_NAME=<your model name>
-GEMINI_API_KEY=<your api key>
-GEMINI_BASE_URL=<your base url>
-
-# Claude API Configuration
-CLAUDE_MODEL_NAME=<your model name>
-CLAUDE_API_KEY=<your api key>
-CLAUDE_BASE_URL=<your base url>
+cp .env.example .env
 ```
 
-#### Loading Environment Variables
-
-After creating the `.env` file, load the environment variables before running the experiments:
-
-```bash
-# Load environment variables from .env file
-source .env
-```
-
-This ensures that all API keys and configuration settings are available to the Python scripts.
+`.env.example` lists the model name, API key, and base URL variables used by each provider. It contains blank values only. Keep `.env` local; it is ignored by Git. The application loads `.env` through `python-dotenv`, so no shell-specific `source` command is required.
 
 ## 🚀 Quick Start
 
 ### Evaluating with LLMs
 
 ```bash
-# Using OpenAI (Precise mode with Chain-of-Thought)
-python main.py --data-path data/example_data.csv --decision-mode precise --cot-type cot --model-type openai --num-scenarios 5 --prompt-format text
+# Using OpenAI (Precise mode with Chain-of-Thought and low-temperature decoding)
+python main.py --data-path data/example_data.csv --decision-mode precise --cot-type cot --model-type openai --num-scenarios 5 --prompt-format text --temperature 0.0 --top-p 1.0
 
-# Using Doubao (Fuzzy mode without Chain-of-Thought)
-python main.py --data-path data/example_data.csv --decision-mode fuzzy --cot-type nocot --model-type doubao --num-scenarios 10 --prompt-format text+json
+# Using Doubao (Fuzzy mode without Chain-of-Thought and strict parsing)
+python main.py --data-path data/example_data.csv --decision-mode fuzzy --cot-type nocot --model-type doubao --num-scenarios 10 --prompt-format text+json --temperature 0.0 --top-p 1.0 --strict-parse
 ```
+
+The open-loop benchmark defaults to `--temperature 0.0` and `--top-p 1.0`. For formal cross-model comparisons, use a fixed evaluation Manifest as described below instead of independent random samples.
+
+### Strict JSON Parsing
+
+New open-loop experiments use strict parsing by default. In precise mode, a valid response must contain a legal `acceleration_1` value in `[-3, 3]`; in fuzzy mode, `priority_vehicle` must identify the ego vehicle, opponent vehicle, or the supported `shared` class. Markdown-fenced JSON is accepted after removing the fence. Regex or legacy defaults remain traceable as fallbacks, but invalid responses are not scored when strict parsing is enabled. Use `--no-strict-parse` only for explicitly labeled backward-compatibility runs.
+
+## Reproducible Decoding Protocol
+
+The main open-loop benchmark uses low-temperature decoding by default:
+
+- `temperature=0.0`
+- `top_p=1.0`
+- strict response parsing enabled
+
+`temperature=0` should be interpreted as **near-deterministic decoding**, not a guarantee of bit-for-bit identical responses from a commercial cloud model. Results may still change when the exact model version, provider routing, backend implementation, system fingerprint, or access time changes. A generation seed is sent only when `--generation-seed` is provided, and it affects generation only if the selected provider and model support that parameter. Even when accepted, a seed does not by itself guarantee absolute determinism.
+
+For a formal main experiment, specify the generation configuration explicitly and archive the resulting metadata:
+
+```bash
+python main.py \
+    --data-path data/example_data.csv \
+    --manifest-path manifests/main_eval.csv \
+    --model-type deepseek \
+    --decision-mode precise \
+    --prompt-format text+json \
+    --cot-type cot \
+    --temperature 0.0 \
+    --top-p 1.0 \
+    --max-tokens 1000 \
+    --generation-seed 42 \
+    --strict-parse \
+    --output-dir outputs/open_loop_LLM/
+```
+
+## Fixed Evaluation Manifest
+
+Each evaluation sample is uniquely identified by the composite key:
+
+```text
+Scenario_id + frame_id
+```
+
+Its stable sample identifier is `<Scenario_id>::<frame_id>`. Generate a versionable Manifest with:
+
+```bash
+python scripts/create_eval_manifest.py \
+    --data-path data/example_data.csv \
+    --num-scenarios 100 \
+    --seed 42 \
+    --output manifests/main_eval.csv
+```
+
+The generated CSV preserves a fixed `manifest_order` and is accompanied by `manifests/main_eval.metadata.json`, which records the source-data SHA256, seed, sample counts, generation time, Git commit, and unique-key definition. Formal cross-model comparisons must use the **same Manifest**, not separately sampled scenario sets. Archive and version the Manifest and its metadata JSON together with the experimental results.
+
+When `--manifest-path` is supplied to `main.py` or the stability runner, all Manifest samples are used in their recorded order; `--num-scenarios` and random sampling are not applied again.
+
+## Temperature Stability Experiment
+
+The stability runner evaluates the Cartesian product `temperature × repeat_id × sample_id`, then deterministically shuffles the serial execution schedule using `--schedule-seed`. A practical default is `--repeats 5`, comparing `temperature=0.0` with `temperature=0.7`.
+
+Precise mode:
+
+```bash
+python scripts/run_temperature_stability.py \
+    --data-path data/example_data.csv \
+    --manifest-path manifests/main_eval.csv \
+    --model-type deepseek \
+    --decision-mode precise \
+    --prompt-format text+json \
+    --cot-type cot \
+    --temperatures 0.0 0.7 \
+    --repeats 5 \
+    --top-p 1.0 \
+    --max-tokens 1000 \
+    --generation-seed 42 \
+    --schedule-seed 20260712 \
+    --max-retries 2 \
+    --retry-backoff 1.0 \
+    --output outputs/temperature_stability/deepseek_precise.jsonl \
+    --resume
+```
+
+Fuzzy mode:
+
+```bash
+python scripts/run_temperature_stability.py \
+    --data-path data/example_data.csv \
+    --manifest-path manifests/main_eval.csv \
+    --model-type deepseek \
+    --decision-mode fuzzy \
+    --prompt-format text+json \
+    --cot-type cot \
+    --temperatures 0.0 0.7 \
+    --repeats 5 \
+    --top-p 1.0 \
+    --max-tokens 1000 \
+    --schedule-seed 20260712 \
+    --output outputs/temperature_stability/deepseek_fuzzy.jsonl \
+    --resume
+```
+
+The output is append-only JSONL with one final record per scheduled task. `--resume` skips job IDs that already completed without an API error; final API failures remain recorded and can be retried in a later resumed run. Use `--dry-run` first to inspect the task count without creating the JSONL or calling an API.
+
+```bash
+python scripts/run_temperature_stability.py \
+    --data-path data/example_data.csv \
+    --manifest-path manifests/main_eval.csv \
+    --model-type deepseek \
+    --decision-mode precise \
+    --prompt-format text+json \
+    --cot-type cot \
+    --temperatures 0.0 0.7 \
+    --repeats 5 \
+    --output outputs/temperature_stability/dry_run.jsonl \
+    --dry-run
+```
+
+The stability experiment always analyzes the model's **raw decision**. It does not apply opponent rationality calibration, and calibrated actions must not be used to compute output variance or agreement.
+
+Analyze one or more JSONL files with:
+
+```bash
+python scripts/analyze_temperature_stability.py \
+    --inputs "outputs/temperature_stability/*.jsonl" \
+    --output-dir outputs/temperature_stability/analysis \
+    --bootstrap-samples 1000 \
+    --bootstrap-seed 42
+```
+
+Invalid responses are excluded from decision statistics by default. Use `--include-invalid` only for an explicitly labeled sensitivity analysis.
+
+## Stability Metrics
+
+- **Precise acceleration within-scenario SD**: the standard deviation of acceleration decisions across repeated generations for the same `sample_id`. It measures repeatability, not scene difficulty.
+- **Mean absolute pairwise difference (MAPD)**: the mean absolute acceleration difference across all pairs of repeated generations for one sample. It is expressed in the same units as acceleration and is often easier to interpret than variance.
+- **Fuzzy majority agreement**: the fraction of repeated decisions assigned to the most frequent priority class.
+- **Fuzzy pairwise agreement**: the fraction of all repeat pairs that produce the same priority decision.
+- **Normalized decision entropy**: the entropy of the repeated priority distribution, normalized by the number of observed decision categories. Zero indicates complete agreement; larger values indicate less stable categorical decisions.
+- **Strict JSON valid rate**: the fraction of calls parsed as valid strict JSON, excluding regex and default fallbacks.
+- **API success rate**: the fraction of scheduled calls that returned without a final API error. It is reported separately from parsing validity.
+- **Rank stability**: Spearman correlation of model score rankings between `temperature=0.0` and `temperature=0.7`, and between repeats at the same temperature. Rankings use only the common set of valid, scored samples; missing results are never silently filled with zero.
+
+The original benchmark tables usually report **cross-scenario SD**, which measures how a metric varies across different traffic scenes. The repeated-sampling experiment reports **within-scenario SD**, which measures how multiple generations vary for the same scene. These quantities answer different questions and should not be placed under an unlabeled generic `std` column.
+
+## Output Provenance
+
+Open-loop and stability outputs retain the information needed to audit a run, including:
+
+- exact `model_name`, provider, and model type;
+- requested generation parameters and effective parameters reported or inferred by the interface;
+- generation-seed capability metadata, without claiming provider-side determinism;
+- SHA256 hash of each prompt;
+- raw model response;
+- parse status, validity flag, parser used, and parse error where applicable;
+- raw decision and, for calibrated main experiments, a separately stored calibrated decision;
+- Git commit, UTC run time, Python version, and source-data path in main-run metadata;
+- Manifest path and the separately archived Manifest plus metadata JSON;
+- API usage and system fingerprint when returned by the provider.
+
+Provider APIs do not always return usage, fingerprints, or confirmed effective parameters. Missing provenance fields are stored as null rather than fabricated. The `requested_parameters` field records what the client sent; it should not be interpreted as proof that every backend honored every option.
 
 ## 📁 Project Structure
 
@@ -139,9 +268,12 @@ LLM-DG/
 │       ├── __init__.py
 │       └── closed_loop.py  # Closed-loop rollout experiment
 ├── scripts/
-│   ├── run_closed_loop_rollout.py  # Closed-loop experiment script
-│   ├── train_bc.py         # Train BC baselines
-│   └── eval_bc_openloop.py # Evaluate BC baselines (open-loop)
+│   ├── create_eval_manifest.py       # Create a fixed evaluation Manifest
+│   ├── run_temperature_stability.py   # Run repeated decoding experiments
+│   ├── analyze_temperature_stability.py # Analyze stability JSONL outputs
+│   ├── run_closed_loop_rollout.py     # Closed-loop experiment script
+│   ├── train_bc.py                    # Train BC baselines
+│   └── eval_bc_openloop.py            # Evaluate BC baselines (open-loop)
 ├── main.py                 # Main evaluation pipeline (open-loop)
 ├── data/
 │   └── example_data.csv    # Sample interaction scenarios

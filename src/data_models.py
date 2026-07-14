@@ -25,6 +25,11 @@ class InteractionScenario(BaseModel):
     ground_truth_priority: Optional[str] = None
     timestamp: Optional[float] = None
 
+    @property
+    def sample_id(self) -> str:
+        """Stable identifier for a specific scenario frame."""
+        return f"{self.scenario_id}::{self.frame_id}"
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert scenario to dictionary representation"""
         return {
@@ -53,6 +58,12 @@ class LLMDecision(BaseModel):
     reasoning: str = Field(..., description="Chain-of-thought reasoning process")
     confidence: Optional[float] = Field(None, description="Confidence score (0-1)")
     strategy_type: Optional[str] = Field(None, description="Type of game strategy chosen")
+    parse_status: str = Field("strict_json", description="Parser outcome category")
+    is_valid: bool = Field(True, description="Whether the parsed decision is semantically valid")
+    parse_error: Optional[str] = None
+    parser_used: Optional[str] = None
+    raw_acceleration_1: Optional[float] = None
+    acceleration_handling: Optional[str] = None
 
 
 class FuzzyDecision(BaseModel):
@@ -63,6 +74,10 @@ class FuzzyDecision(BaseModel):
     textual_reasoning: str = Field(..., description="Textual reasoning process")
     risk_level: str = Field(..., description="Risk level assessment (low/medium/high/critical)")
     scenario_type: str = Field(..., description="Scenario type (merging/crossing/yielding/following/other)")
+    parse_status: str = Field("strict_json", description="Parser outcome category")
+    is_valid: bool = Field(True, description="Whether the parsed decision is semantically valid")
+    parse_error: Optional[str] = None
+    parser_used: Optional[str] = None
 
 
 class GameMetrics(BaseModel):
